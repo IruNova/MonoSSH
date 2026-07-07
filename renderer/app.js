@@ -11,6 +11,7 @@ const state = {
   activeTabId: null,
   selectedFile: null,
   selectedFiles: new Map(),
+  fileCache: new Map(),
   currentPath: '/',
   systemTimer: null
 };
@@ -282,12 +283,7 @@ async function saveConnection() {
 async function connectSelected() {
   const c = selectedConnection();
   if (!c) return toast('请先选择连接');
-  let tab = state.tabs.find(t => t.connection.id === c.id);
-  if (tab) {
-    activateTab(tab.id);
-    return;
-  }
-  tab = createTerminalTab(c);
+  const tab = createTerminalTab(c);
   state.tabs.push(tab);
   renderTabs();
   activateTab(tab.id);
@@ -336,7 +332,7 @@ function createTerminalTab(connection) {
     }
   });
 
-  return { id, connection, terminal, fit, view, ws: null };
+  return { id, connection, terminal, fit, view, ws: null, filePath: '/', fileCacheKey: `${id}:/` };
 }
 
 function connectTab(tab) {
@@ -394,7 +390,7 @@ function activateTab(id) {
     tab?.terminal.focus();
   }, 30);
   if (tab) {
-    state.currentPath = el.remotePath.value || '/';
+    state.currentPath = tab.filePath || '/';
     loadFiles(state.currentPath).catch(err => toast(err.message));
     refreshSystem().catch(() => {});
   }
@@ -407,6 +403,9 @@ function closeTab(id = state.activeTabId) {
   try { tab.ws?.close(); } catch (_) {}
   try { tab.terminal.dispose(); } catch (_) {}
   tab.view.remove();
+  for (const key of state.fileCache.keys()) {
+    if (key.startsWith(`${tab.id}:`)) state.fileCache.delete(key);
+  }
   if (state.activeTabId === id) state.activeTabId = state.tabs[idx]?.id || state.tabs[idx - 1]?.id || null;
   if (state.activeTabId) activateTab(state.activeTabId);
   else {
@@ -505,18 +504,54 @@ function currentConnectionIdForFiles() {
   return activeTab()?.connection.id || state.selectedId;
 }
 
-async function loadFiles(p = el.remotePath.value || '/') {
+function fileCacheKey(tab, p) {
+  return `${tab.id}:${p || '/'}`;
+}
+
+function renderFileCache(tab, cached) {
+  state.currentPath = cached.path;
+  tab.filePath = cached.path;
+  el.remotePath.value = cached.path;
+  state.selectedFile = null;
+  state.selectedFiles.clear();
+  renderFiles(cached.entries || []);
+}
+
+function invalidateActiveFileCache() {
+  const tab = activeTab();
+  if (!tab) return;
+  for (const key of state.fileCache.keys()) {
+    if (key.startsWith(`${tab.id}:`)) state.fileCache.delete(key);
+  }
+}
+
+async function loadFiles(p = el.remotePath.value || '/', options = {}) {
   const id = currentConnectionIdForFiles();
   if (!id) return toast('请先连接或选择 SSH 主机');
+  const tab = activeTab();
+  const requestedPath = p || '/';
+  if (tab && !options.force) {
+    const cached = state.fileCache.get(fileCacheKey(tab, requestedPath));
+    if (cached) {
+      renderFileCache(tab, cached);
+      return;
+    }
+  }
   state.selectedFiles.clear();
   updateFileSelectionUI();
   el.fileTableBody.innerHTML = '<tr><td colspan="6" class="muted center">加载中...</td></tr>';
   updateFileSelectionUI();
-  const result = await api(`/api/fs/list?id=${encodeURIComponent(id)}&path=${encodeURIComponent(p)}`);
-  state.currentPath = result.path || p;
+  const result = await api(`/api/fs/list?id=${encodeURIComponent(id)}&path=${encodeURIComponent(requestedPath)}`);
+  const payload = { path: result.path || requestedPath, entries: result.entries || [], loadedAt: Date.now() };
+  if (tab) {
+    state.fileCache.set(fileCacheKey(tab, requestedPath), payload);
+    state.fileCache.set(fileCacheKey(tab, payload.path), payload);
+    tab.filePath = payload.path;
+  }
+  state.currentPath = payload.path;
   el.remotePath.value = state.currentPath;
   state.selectedFile = null;
-  renderFiles(result.entries || []);
+  renderFiles(payload.entries);
 }
 
 function renderFiles(entries) {
@@ -615,7 +650,8 @@ async function uploadFiles(fileList) {
     });
     updateTransfer('上传完成', `${files.length} 个文件已上传`, 100);
     toast(`已上传 ${files.length} 个文件`);
-    await loadFiles(state.currentPath);
+    invalidateActiveFileCache();
+    await loadFiles(state.currentPath, { force: true });
   } finally {
     hideTransfer();
   }
@@ -661,7 +697,8 @@ async function mkdir() {
     updateTransfer('新建完成', name, 100);
     toast('文件夹已创建');
   } finally {
-    await loadFiles(state.currentPath).catch(err => toast(err.message));
+    invalidateActiveFileCache();
+    await loadFiles(state.currentPath, { force: true }).catch(err => toast(err.message));
     hideTransfer();
   }
 }
@@ -683,7 +720,8 @@ async function deleteSelectedFile() {
     updateTransfer('删除完成', `${targets.length} 项已删除`, 100);
     toast('已删除并刷新文件列表');
   } finally {
-    await loadFiles(state.currentPath).catch(err => toast(err.message));
+    invalidateActiveFileCache();
+    await loadFiles(state.currentPath, { force: true }).catch(err => toast(err.message));
     hideTransfer();
   }
 }
@@ -701,7 +739,8 @@ async function renameSelectedFile() {
     updateTransfer('重命名完成', name, 100);
     toast('已重命名并刷新文件列表');
   } finally {
-    await loadFiles(state.currentPath).catch(err => toast(err.message));
+    invalidateActiveFileCache();
+    await loadFiles(state.currentPath, { force: true }).catch(err => toast(err.message));
     hideTransfer();
   }
 }
@@ -769,7 +808,7 @@ function bindEvents() {
   window.addEventListener('resize', () => activeTab()?.fit.fit());
   el.refreshSystemBtn.addEventListener('click', () => refreshSystem().catch(err => toast(err.message)));
 
-  el.refreshFilesBtn.addEventListener('click', () => loadFiles(state.currentPath).catch(err => toast(err.message)));
+  el.refreshFilesBtn.addEventListener('click', () => loadFiles(state.currentPath, { force: true }).catch(err => toast(err.message)));
   el.selectAllFiles?.addEventListener('change', () => {
     const checked = el.selectAllFiles.checked;
     document.querySelectorAll('.file-check').forEach(input => {
