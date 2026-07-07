@@ -472,9 +472,10 @@ func (a *api) fsMkdir(w http.ResponseWriter, r *http.Request) {
 
 func (a *api) fsDelete(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		ID        string `json:"id"`
-		Path      string `json:"path"`
-		Recursive bool   `json:"recursive"`
+		ID        string   `json:"id"`
+		Path      string   `json:"path"`
+		Paths     []string `json:"paths"`
+		Recursive bool     `json:"recursive"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -488,24 +489,31 @@ func (a *api) fsDelete(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	if req.Path == "" || req.Path == "/" {
-		writeError(w, http.StatusBadRequest, errors.New("refuse to delete empty path or root"))
-		return
+	paths := req.Paths
+	if len(paths) == 0 && req.Path != "" {
+		paths = []string{req.Path}
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Minute)
-	defer cancel()
-	fs, client, err := sshclient.SFTP(ctx, item)
+	paths, err = normalizeDeletePaths(paths)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, err)
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	defer client.Close()
-	defer fs.Close()
-	if err := removeRemote(fs, req.Path, req.Recursive); err != nil {
-		writeError(w, http.StatusBadGateway, err)
+	args := make([]string, 0, len(paths))
+	for _, p := range paths {
+		args = append(args, shellQuote(p))
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	defer cancel()
+	out, err := sshclient.Run(ctx, item, "rm -rf -- "+strings.Join(args, " "))
+	if err != nil {
+		msg := err.Error()
+		if len(out) > 0 {
+			msg += ": " + strings.TrimSpace(string(out))
+		}
+		writeError(w, http.StatusBadGateway, errors.New(msg))
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(paths), "output": string(out)})
 }
 
 func (a *api) fsRename(w http.ResponseWriter, r *http.Request) {
@@ -586,31 +594,34 @@ func cleanRemotePath(fs *sftp.Client, p string) string {
 	return path.Clean("/" + p)
 }
 
-func removeRemote(fs *sftp.Client, p string, recursive bool) error {
-	info, err := fs.Stat(p)
-	if err != nil {
-		return err
-	}
-	if !info.IsDir() {
-		return fs.Remove(p)
-	}
-	if !recursive {
-		return fs.RemoveDirectory(p)
-	}
-	entries, err := fs.ReadDir(p)
-	if err != nil {
-		return err
-	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if name == "." || name == ".." {
-			continue
+func normalizeDeletePaths(paths []string) ([]string, error) {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(paths))
+	for _, p := range paths {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			return nil, errors.New("refuse to delete empty path")
 		}
-		if err := removeRemote(fs, path.Join(p, name), recursive); err != nil {
-			return err
+		p = path.Clean(strings.ReplaceAll(p, "\\", "/"))
+		if p == "." || p == "/" || p == ".." || strings.HasPrefix(p, "../") {
+			return nil, fmt.Errorf("refuse to delete unsafe path %q", p)
+		}
+		if strings.Trim(p, "/.") == "" {
+			return nil, fmt.Errorf("refuse to delete unsafe path %q", p)
+		}
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
 		}
 	}
-	return fs.RemoveDirectory(p)
+	if len(out) == 0 {
+		return nil, errors.New("missing path")
+	}
+	return out, nil
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func mergeQuery(raw, key, value string) string {

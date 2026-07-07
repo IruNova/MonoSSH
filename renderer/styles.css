@@ -59,6 +59,8 @@ input, textarea, select {
   font-size: 12px;
 }
 textarea { resize: vertical; min-height: 84px; font-family: var(--mono); }
+input[type="checkbox"] { width: 14px; height: 14px; padding: 0; accent-color: #fff; }
+button:disabled { opacity: .42; cursor: not-allowed; transform: none; }
 input:focus, textarea:focus, select:focus { border-color: #777; box-shadow: 0 0 0 3px rgba(255,255,255,.07); }
 
 .app-shell {
@@ -248,8 +250,9 @@ table { width: 100%; border-collapse: collapse; }
 th, td { border-bottom: 1px solid var(--line-soft); padding: 7px 10px; text-align: left; font-size: 12px; }
 th { position: sticky; top: 0; background: #0c0c0d; z-index: 1; color: #fff; font-weight: 700; }
 td { color: #dcdcdc; }
+.check-col { width: 34px; text-align: center; padding-left: 8px; padding-right: 6px; }
 .file-row { cursor: pointer; }
-.file-row:hover, .file-row.selected { background: rgba(255,255,255,.06); }
+.file-row:hover, .file-row.selected, .file-row.checked { background: rgba(255,255,255,.06); }
 .file-name { display: flex; align-items: center; gap: 9px; font-weight: 650; }
 .file-icon { opacity: .9; width: 18px; display: inline-block; }
 .muted { color: var(--muted) !important; }

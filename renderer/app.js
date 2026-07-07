@@ -10,6 +10,7 @@ const state = {
   tabs: [],
   activeTabId: null,
   selectedFile: null,
+  selectedFiles: new Map(),
   currentPath: '/',
   systemTimer: null
 };
@@ -46,6 +47,7 @@ const el = {
   closeTabBtn: $('closeTabBtn'),
   remotePath: $('remotePath'),
   fileTableBody: $('fileTableBody'),
+  selectAllFiles: $('selectAllFiles'),
   refreshFilesBtn: $('refreshFilesBtn'),
   uploadBtn: $('uploadBtn'),
   uploadInput: $('uploadInput'),
@@ -503,7 +505,10 @@ function currentConnectionIdForFiles() {
 async function loadFiles(p = el.remotePath.value || '/') {
   const id = currentConnectionIdForFiles();
   if (!id) return toast('请先连接或选择 SSH 主机');
-  el.fileTableBody.innerHTML = '<tr><td colspan="5" class="muted center">加载中...</td></tr>';
+  state.selectedFiles.clear();
+  updateFileSelectionUI();
+  el.fileTableBody.innerHTML = '<tr><td colspan="6" class="muted center">加载中...</td></tr>';
+  updateFileSelectionUI();
   const result = await api(`/api/fs/list?id=${encodeURIComponent(id)}&path=${encodeURIComponent(p)}`);
   state.currentPath = result.path || p;
   el.remotePath.value = state.currentPath;
@@ -513,7 +518,8 @@ async function loadFiles(p = el.remotePath.value || '/') {
 
 function renderFiles(entries) {
   if (!entries.length) {
-    el.fileTableBody.innerHTML = '<tr><td colspan="5" class="muted center">空目录</td></tr>';
+    el.fileTableBody.innerHTML = '<tr><td colspan="6" class="muted center">空目录</td></tr>';
+    updateFileSelectionUI();
     return;
   }
   el.fileTableBody.innerHTML = '';
@@ -522,22 +528,58 @@ function renderFiles(entries) {
     tr.className = 'file-row';
     tr.dataset.path = f.path;
     tr.innerHTML = `
+      <td class="check-col"><input class="file-check" type="checkbox" aria-label="选择 ${escapeHtml(f.name)}" /></td>
       <td><span class="file-name"><span class="file-icon">${f.isDir ? '▣' : '□'}</span>${escapeHtml(f.name)}</span></td>
       <td>${f.isDir ? '-' : formatSize(f.size)}</td>
       <td>${f.isDir ? '文件夹' : fileType(f.name)}</td>
       <td>${formatDate(f.modTime)}</td>
       <td class="muted">${escapeHtml(f.mode)}</td>`;
-    tr.addEventListener('click', () => {
+    const checkbox = tr.querySelector('.file-check');
+    checkbox.addEventListener('click', (e) => e.stopPropagation());
+    checkbox.addEventListener('change', () => toggleFileSelection(f, checkbox.checked, tr));
+    tr.addEventListener('click', (e) => {
+      if (e.target.classList.contains('file-check')) return;
       document.querySelectorAll('.file-row').forEach(row => row.classList.remove('selected'));
       tr.classList.add('selected');
       state.selectedFile = f;
     });
-    tr.addEventListener('dblclick', () => {
+    tr.addEventListener('dblclick', (e) => {
+      if (e.target.classList.contains('file-check')) return;
       if (f.isDir) loadFiles(f.path).catch(err => toast(err.message));
       else downloadFile(f).catch(err => toast(err.message));
     });
     el.fileTableBody.appendChild(tr);
   }
+  updateFileSelectionUI();
+}
+
+function toggleFileSelection(file, checked, row) {
+  if (checked) {
+    state.selectedFiles.set(file.path, file);
+    row.classList.add('checked');
+    state.selectedFile = file;
+  } else {
+    state.selectedFiles.delete(file.path);
+    row.classList.remove('checked');
+    if (state.selectedFile?.path === file.path) state.selectedFile = Array.from(state.selectedFiles.values()).at(-1) || null;
+  }
+  updateFileSelectionUI();
+}
+
+function updateFileSelectionUI() {
+  const checks = Array.from(document.querySelectorAll('.file-check'));
+  const checked = checks.filter(x => x.checked).length;
+  if (el.selectAllFiles) {
+    el.selectAllFiles.checked = checks.length > 0 && checked === checks.length;
+    el.selectAllFiles.indeterminate = checked > 0 && checked < checks.length;
+  }
+  el.deleteFileBtn.textContent = checked ? `删除(${checked})` : '删除';
+  el.downloadBtn.disabled = checked > 1;
+  el.renameBtn.disabled = checked > 1;
+}
+
+function selectedFilesForAction() {
+  return Array.from(state.selectedFiles.values());
 }
 
 function formatSize(bytes) {
@@ -623,13 +665,19 @@ async function mkdir() {
 
 async function deleteSelectedFile() {
   const id = currentConnectionIdForFiles();
-  const f = state.selectedFile;
-  if (!id || !f) return toast('请选择要删除的文件');
-  if (!confirm(`确认删除 ${f.path} ?`)) return;
-  showTransfer('删除文件', f.name, 45);
+  const files = selectedFilesForAction();
+  const targets = files.length ? files : (state.selectedFile ? [state.selectedFile] : []);
+  if (!id || !targets.length) return toast('请选择要删除的文件');
+  const names = targets.slice(0, 5).map(f => f.path).join('\n');
+  const more = targets.length > 5 ? `\n... 以及另外 ${targets.length - 5} 项` : '';
+  if (!confirm(`确认使用 rm -rf 删除 ${targets.length} 项？\n${names}${more}`)) return;
+  showTransfer('删除文件', targets.length === 1 ? targets[0].name : `${targets.length} 项`, 45);
   try {
-    await api('/api/fs/delete', { method: 'POST', body: JSON.stringify({ id, path: f.path, recursive: f.isDir }) });
-    updateTransfer('删除完成', f.name, 100);
+    await api('/api/fs/delete', {
+      method: 'POST',
+      body: JSON.stringify({ id, paths: targets.map(f => f.path), recursive: true })
+    });
+    updateTransfer('删除完成', `${targets.length} 项已删除`, 100);
     toast('已删除并刷新文件列表');
   } finally {
     await loadFiles(state.currentPath).catch(err => toast(err.message));
@@ -707,6 +755,13 @@ function bindEvents() {
   el.refreshSystemBtn.addEventListener('click', () => refreshSystem().catch(err => toast(err.message)));
 
   el.refreshFilesBtn.addEventListener('click', () => loadFiles(state.currentPath).catch(err => toast(err.message)));
+  el.selectAllFiles?.addEventListener('change', () => {
+    const checked = el.selectAllFiles.checked;
+    document.querySelectorAll('.file-check').forEach(input => {
+      input.checked = checked;
+      input.dispatchEvent(new Event('change'));
+    });
+  });
   el.goPathBtn.addEventListener('click', () => loadFiles(el.remotePath.value).catch(err => toast(err.message)));
   el.remotePath.addEventListener('keydown', e => { if (e.key === 'Enter') loadFiles(el.remotePath.value).catch(err => toast(err.message)); });
   el.homeBtn.addEventListener('click', () => loadFiles('/').catch(err => toast(err.message)));
