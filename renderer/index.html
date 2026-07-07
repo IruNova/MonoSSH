@@ -41,7 +41,22 @@
           <span>系统信息</span>
           <button id="refreshSystemBtn" class="ghost">刷新</button>
         </div>
-        <pre id="systemInfo">连接后显示远端运行状态</pre>
+        <div class="system-dashboard">
+          <div class="metric-card cpu-card">
+            <div class="metric-label">CPU</div>
+            <strong id="cpuValue">--%</strong>
+            <div class="meter"><span id="cpuBar"></span></div>
+          </div>
+          <div class="metric-grid">
+            <div class="metric-card"><div class="metric-label">内存</div><strong id="memValue">--%</strong><small id="memDetail">--</small><div class="meter"><span id="memBar"></span></div></div>
+            <div class="metric-card"><div class="metric-label">磁盘</div><strong id="diskValue">--%</strong><small id="diskDetail">--</small><div class="meter"><span id="diskBar"></span></div></div>
+            <div class="metric-card"><div class="metric-label">负载</div><strong id="loadValue">--</strong><small>1 / 5 / 15 min</small></div>
+            <div class="metric-card"><div class="metric-label">运行</div><strong id="uptimeValue">--</strong><small>uptime</small></div>
+          </div>
+          <div class="proc-head">CPU Top</div>
+          <div id="procList" class="proc-list">连接后显示远端运行状态</div>
+          <div id="systemInfo" class="system-status">未连接</div>
+        </div>
       </section>
     </aside>
 
@@ -178,6 +193,15 @@
         <button type="button" id="saveConnectBtn" class="primary inverted">保存并连接</button>
       </div>
     </form>
+  </div>
+
+  <div id="transferPanel" class="transfer-panel hidden">
+    <div class="transfer-head">
+      <strong id="transferTitle">传输</strong>
+      <span id="transferPercent">0%</span>
+    </div>
+    <div class="transfer-bar"><span id="transferBar"></span></div>
+    <div id="transferDetail" class="transfer-detail">准备中...</div>
   </div>
 
   <div id="toast" class="toast hidden"></div>

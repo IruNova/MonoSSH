@@ -27,6 +27,17 @@ const el = {
   deleteConnBtn: $('deleteConnBtn'),
   refreshSystemBtn: $('refreshSystemBtn'),
   systemInfo: $('systemInfo'),
+  cpuValue: $('cpuValue'),
+  cpuBar: $('cpuBar'),
+  memValue: $('memValue'),
+  memDetail: $('memDetail'),
+  memBar: $('memBar'),
+  diskValue: $('diskValue'),
+  diskDetail: $('diskDetail'),
+  diskBar: $('diskBar'),
+  loadValue: $('loadValue'),
+  uptimeValue: $('uptimeValue'),
+  procList: $('procList'),
   tabs: $('tabs'),
   terminalViews: $('terminalViews'),
   terminalTitle: $('terminalTitle'),
@@ -50,6 +61,11 @@ const el = {
   form: $('connectionForm'),
   modalTitle: $('modalTitle'),
   saveConnectBtn: $('saveConnectBtn'),
+  transferPanel: $('transferPanel'),
+  transferTitle: $('transferTitle'),
+  transferPercent: $('transferPercent'),
+  transferBar: $('transferBar'),
+  transferDetail: $('transferDetail'),
   toast: $('toast')
 };
 
@@ -71,11 +87,55 @@ function api(path, options = {}) {
   });
 }
 
+function xhrApi(path, options = {}) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(options.method || 'GET', `${API}${path}`, true);
+    xhr.responseType = options.responseType || 'json';
+    for (const [key, value] of Object.entries(options.headers || {})) xhr.setRequestHeader(key, value);
+    if (options.onDownloadProgress) xhr.onprogress = options.onDownloadProgress;
+    if (options.onUploadProgress && xhr.upload) xhr.upload.onprogress = options.onUploadProgress;
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        resolve({ body: xhr.response, xhr });
+      } else {
+        let msg = `${xhr.status} ${xhr.statusText}`;
+        try {
+          const body = typeof xhr.response === 'string' ? JSON.parse(xhr.response) : xhr.response;
+          msg = body?.error || msg;
+        } catch (_) {}
+        reject(new Error(msg));
+      }
+    };
+    xhr.onerror = () => reject(new Error('网络错误'));
+    xhr.onabort = () => reject(new Error('操作已取消'));
+    xhr.send(options.body || null);
+  });
+}
+
 function toast(message, timeout = 2600) {
   el.toast.textContent = message;
   el.toast.classList.remove('hidden');
   clearTimeout(el.toast._timer);
   el.toast._timer = setTimeout(() => el.toast.classList.add('hidden'), timeout);
+}
+
+function showTransfer(title, detail = '准备中...', percent = 0) {
+  updateTransfer(title, detail, percent);
+  el.transferPanel.classList.remove('hidden');
+}
+
+function updateTransfer(title, detail, percent) {
+  const value = Math.max(0, Math.min(100, Number.isFinite(percent) ? percent : 0));
+  el.transferTitle.textContent = title;
+  el.transferPercent.textContent = `${Math.round(value)}%`;
+  el.transferBar.style.width = `${value}%`;
+  el.transferDetail.textContent = detail;
+}
+
+function hideTransfer(delay = 900) {
+  clearTimeout(el.transferPanel._timer);
+  el.transferPanel._timer = setTimeout(() => el.transferPanel.classList.add('hidden'), delay);
 }
 
 function escapeHtml(s) {
@@ -360,12 +420,80 @@ function closeTab(id = state.activeTabId) {
 async function refreshSystem() {
   const tab = activeTab();
   if (!tab) {
-    el.systemInfo.textContent = '连接后显示远端运行状态';
+    resetSystemDashboard('连接后显示远端运行状态');
     return;
   }
-  el.systemInfo.textContent = '加载中...';
+  el.systemInfo.textContent = '刷新中...';
   const result = await api(`/api/system?id=${encodeURIComponent(tab.connection.id)}`);
-  el.systemInfo.textContent = result.output || '暂无数据';
+  renderSystemDashboard(parseSystemOutput(result.output || ''));
+}
+
+function resetSystemDashboard(status = '未连接') {
+  el.cpuValue.textContent = '--%';
+  el.memValue.textContent = '--%';
+  el.diskValue.textContent = '--%';
+  el.memDetail.textContent = '--';
+  el.diskDetail.textContent = '--';
+  el.loadValue.textContent = '--';
+  el.uptimeValue.textContent = '--';
+  el.procList.textContent = status;
+  el.systemInfo.textContent = status;
+  setMeter(el.cpuBar, 0);
+  setMeter(el.memBar, 0);
+  setMeter(el.diskBar, 0);
+}
+
+function setMeter(node, value) {
+  const pct = Math.max(0, Math.min(100, Number(value) || 0));
+  node.style.width = `${pct}%`;
+}
+
+function parseSystemOutput(output) {
+  const data = { processes: [] };
+  let inProc = false;
+  for (const rawLine of String(output || '').split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+    if (line === 'PROC') { inProc = true; continue; }
+    if (inProc) {
+      const [cpu, mem, ...cmd] = line.split(/\t+/);
+      if (cpu && mem && cmd.length) data.processes.push({ cpu: Number(cpu), mem: Number(mem), cmd: cmd.join(' ') });
+      continue;
+    }
+    const [key, ...rest] = line.split(/\t+/);
+    if (key === 'CPU') data.cpu = Number(rest[0]);
+    if (key === 'UPTIME') data.uptime = rest.join(' ').trim();
+    if (key === 'LOAD') data.load = rest.filter(Boolean);
+    if (key === 'MEM') data.mem = { used: rest[0], total: rest[1], pct: Number(rest[2]) };
+    if (key === 'DISK') data.disk = { used: rest[0], total: rest[1], pct: Number(rest[2]) };
+  }
+  return data;
+}
+
+function renderSystemDashboard(data) {
+  const cpu = Math.round(Number(data.cpu) || 0);
+  const mem = Math.round(Number(data.mem?.pct) || 0);
+  const disk = Math.round(Number(data.disk?.pct) || 0);
+  el.cpuValue.textContent = `${cpu}%`;
+  el.memValue.textContent = `${mem}%`;
+  el.diskValue.textContent = `${disk}%`;
+  el.memDetail.textContent = data.mem?.used && data.mem?.total ? `${data.mem.used}/${data.mem.total} MB` : '--';
+  el.diskDetail.textContent = data.disk?.used && data.disk?.total ? `${data.disk.used}/${data.disk.total}` : '--';
+  el.loadValue.textContent = data.load?.length ? data.load.join(' / ') : '--';
+  el.uptimeValue.textContent = data.uptime || '--';
+  setMeter(el.cpuBar, cpu);
+  setMeter(el.memBar, mem);
+  setMeter(el.diskBar, disk);
+  if (data.processes?.length) {
+    el.procList.innerHTML = data.processes.map(p => `
+      <div class="proc-row">
+        <span>${escapeHtml(p.cmd)}</span>
+        <strong>${Number(p.cpu || 0).toFixed(1)}%</strong>
+      </div>`).join('');
+  } else {
+    el.procList.textContent = '暂无进程数据';
+  }
+  el.systemInfo.textContent = `CPU ${cpu}% · MEM ${mem}% · DISK ${disk}%`;
 }
 
 function currentConnectionIdForFiles() {
@@ -406,7 +534,7 @@ function renderFiles(entries) {
     });
     tr.addEventListener('dblclick', () => {
       if (f.isDir) loadFiles(f.path).catch(err => toast(err.message));
-      else downloadFile(f);
+      else downloadFile(f).catch(err => toast(err.message));
     });
     el.fileTableBody.appendChild(tr);
   }
@@ -427,23 +555,54 @@ async function uploadFiles(fileList) {
   if (!id) return toast('请先连接或选择 SSH 主机');
   const files = Array.from(fileList || []);
   if (!files.length) return;
+  const total = files.reduce((sum, file) => sum + file.size, 0);
   const form = new FormData();
   for (const file of files) form.append('files', file, file.name);
-  await api(`/api/fs/upload?id=${encodeURIComponent(id)}&path=${encodeURIComponent(state.currentPath)}`, { method: 'POST', body: form });
-  toast(`已上传 ${files.length} 个文件`);
-  await loadFiles(state.currentPath);
+  showTransfer('上传文件', `${files.length} 个文件 · ${formatSize(total)}`, 0);
+  try {
+    await xhrApi(`/api/fs/upload?id=${encodeURIComponent(id)}&path=${encodeURIComponent(state.currentPath)}`, {
+      method: 'POST',
+      body: form,
+      onUploadProgress: (ev) => {
+        const pct = ev.lengthComputable ? ev.loaded * 100 / ev.total : 0;
+        updateTransfer('上传文件', `${formatSize(ev.loaded)} / ${ev.lengthComputable ? formatSize(ev.total) : formatSize(total)}`, pct);
+      }
+    });
+    updateTransfer('上传完成', `${files.length} 个文件已上传`, 100);
+    toast(`已上传 ${files.length} 个文件`);
+    await loadFiles(state.currentPath);
+  } finally {
+    hideTransfer();
+  }
 }
 
-function downloadFile(file = state.selectedFile) {
+async function downloadFile(file = state.selectedFile) {
   const id = currentConnectionIdForFiles();
   if (!id || !file) return toast('请选择文件');
   if (file.isDir) return toast('暂不支持下载文件夹');
-  const a = document.createElement('a');
-  a.href = `${API}/api/fs/download?id=${encodeURIComponent(id)}&path=${encodeURIComponent(file.path)}`;
-  a.download = file.name;
-  document.body.appendChild(a);
-  a.click();
-  a.remove();
+  showTransfer('下载文件', file.name, 0);
+  try {
+    const { body } = await xhrApi(`/api/fs/download?id=${encodeURIComponent(id)}&path=${encodeURIComponent(file.path)}`, {
+      responseType: 'blob',
+      onDownloadProgress: (ev) => {
+        const total = ev.lengthComputable ? ev.total : file.size;
+        const pct = total ? ev.loaded * 100 / total : 0;
+        updateTransfer('下载文件', `${file.name} · ${formatSize(ev.loaded)} / ${total ? formatSize(total) : '--'}`, pct);
+      }
+    });
+    const url = URL.createObjectURL(body);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = file.name;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
+    updateTransfer('下载完成', file.name, 100);
+    toast(`已下载 ${file.name}`);
+  } finally {
+    hideTransfer();
+  }
 }
 
 async function mkdir() {
@@ -451,8 +610,15 @@ async function mkdir() {
   if (!id) return toast('请先连接或选择 SSH 主机');
   const name = prompt('新文件夹名称');
   if (!name) return;
-  await api('/api/fs/mkdir', { method: 'POST', body: JSON.stringify({ id, path: state.currentPath, name }) });
-  await loadFiles(state.currentPath);
+  showTransfer('新建文件夹', name, 35);
+  try {
+    await api('/api/fs/mkdir', { method: 'POST', body: JSON.stringify({ id, path: state.currentPath, name }) });
+    updateTransfer('新建完成', name, 100);
+    toast('文件夹已创建');
+  } finally {
+    await loadFiles(state.currentPath).catch(err => toast(err.message));
+    hideTransfer();
+  }
 }
 
 async function deleteSelectedFile() {
@@ -460,8 +626,15 @@ async function deleteSelectedFile() {
   const f = state.selectedFile;
   if (!id || !f) return toast('请选择要删除的文件');
   if (!confirm(`确认删除 ${f.path} ?`)) return;
-  await api('/api/fs/delete', { method: 'POST', body: JSON.stringify({ id, path: f.path, recursive: f.isDir }) });
-  await loadFiles(state.currentPath);
+  showTransfer('删除文件', f.name, 45);
+  try {
+    await api('/api/fs/delete', { method: 'POST', body: JSON.stringify({ id, path: f.path, recursive: f.isDir }) });
+    updateTransfer('删除完成', f.name, 100);
+    toast('已删除并刷新文件列表');
+  } finally {
+    await loadFiles(state.currentPath).catch(err => toast(err.message));
+    hideTransfer();
+  }
 }
 
 async function renameSelectedFile() {
@@ -471,8 +644,15 @@ async function renameSelectedFile() {
   const base = f.path.split('/').slice(0, -1).join('/') || '/';
   const name = prompt('新名称', f.name);
   if (!name || name === f.name) return;
-  await api('/api/fs/rename', { method: 'POST', body: JSON.stringify({ id, oldPath: f.path, newPath: `${base}/${name}`.replace(/\/+/g, '/') }) });
-  await loadFiles(state.currentPath);
+  showTransfer('重命名', `${f.name} → ${name}`, 55);
+  try {
+    await api('/api/fs/rename', { method: 'POST', body: JSON.stringify({ id, oldPath: f.path, newPath: `${base}/${name}`.replace(/\/+/g, '/') }) });
+    updateTransfer('重命名完成', name, 100);
+    toast('已重命名并刷新文件列表');
+  } finally {
+    await loadFiles(state.currentPath).catch(err => toast(err.message));
+    hideTransfer();
+  }
 }
 
 function parentPath(p) {
@@ -535,7 +715,7 @@ function bindEvents() {
   el.uploadBtn.addEventListener('click', () => el.uploadInput.click());
   el.uploadInput.addEventListener('change', () => uploadFiles(el.uploadInput.files).catch(err => toast(err.message)).finally(() => { el.uploadInput.value = ''; }));
   el.newFolderBtn.addEventListener('click', () => mkdir().catch(err => toast(err.message)));
-  el.downloadBtn.addEventListener('click', () => downloadFile());
+  el.downloadBtn.addEventListener('click', () => downloadFile().catch(err => toast(err.message)));
   el.deleteFileBtn.addEventListener('click', () => deleteSelectedFile().catch(err => toast(err.message)));
   el.renameBtn.addEventListener('click', () => renameSelectedFile().catch(err => toast(err.message)));
 

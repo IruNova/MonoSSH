@@ -92,6 +92,7 @@ func withCORS(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "Content-Length, Content-Disposition")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -553,7 +554,17 @@ func (a *api) system(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	cmd := `printf "UPTIME\t"; (uptime -p 2>/dev/null || uptime) | tr '\n' ' '; printf "\nLOAD\t"; cat /proc/loadavg 2>/dev/null | awk '{print $1" "$2" "$3}'; printf "MEM\t"; free -m 2>/dev/null | awk '/Mem:/ {printf "%s/%s MB %.0f%%\n",$3,$2,$3*100/$2}'; printf "DISK\t"; df -P -h / 2>/dev/null | awk 'NR==2 {printf "%s/%s %s\n",$3,$2,$5}'; printf "PROC\n"; ps -eo pmem,pcpu,comm --sort=-pcpu 2>/dev/null | head -6`
+	cmd := `cpu_sample() { awk 'NR==1 { idle=$5+$6; total=0; for (i=2; i<=NF; i++) total += $i; print total, idle }' /proc/stat 2>/dev/null; }
+first="$(cpu_sample)"
+sleep 0.25
+second="$(cpu_sample)"
+cpu="$(awk -v a="$first" -v b="$second" 'BEGIN { split(a,x," "); split(b,y," "); dt=y[1]-x[1]; di=y[2]-x[2]; if (dt>0) printf "%.0f", (dt-di)*100/dt; else printf "0" }')"
+printf "CPU\t%s\n" "$cpu"
+printf "UPTIME\t"; (uptime -p 2>/dev/null || uptime) | sed 's/^up //' | tr '\n' ' '; printf "\n"
+printf "LOAD\t"; awk '{print $1"\t"$2"\t"$3}' /proc/loadavg 2>/dev/null || printf -- "-\t-\t-\n"
+free -m 2>/dev/null | awk '/Mem:/ { pct=$2>0?$3*100/$2:0; printf "MEM\t%s\t%s\t%.0f\n",$3,$2,pct }'
+df -P -h / 2>/dev/null | awk 'NR==2 { gsub("%","",$5); printf "DISK\t%s\t%s\t%s\n",$3,$2,$5 }'
+printf "PROC\n"; ps -eo pcpu,pmem,comm --sort=-pcpu 2>/dev/null | awk 'NR>1 && NR<=6 {printf "%s\t%s\t%s\n",$1,$2,$3}'`
 	out, err := sshclient.Run(ctx, item, cmd)
 	if err != nil && len(out) == 0 {
 		writeError(w, http.StatusBadGateway, err)

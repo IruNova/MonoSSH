@@ -9,9 +9,12 @@
   "scripts": {
     "build:backend": "go build -o bin/ssh-backend ./cmd/server",
     "build:backend:win": "GOOS=windows GOARCH=amd64 go build -ldflags=\"-s -w\" -o bin/ssh-backend.exe ./cmd/server",
+    "build:backend:win:ps": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:GOOS='windows'; $env:GOARCH='amd64'; go build -ldflags='-s -w' -o bin/ssh-backend.exe ./cmd/server\"",
     "dev": "npm run build:backend && electron .",
     "start": "electron .",
-    "dist": "npm run build:backend && electron-builder"
+    "dist": "npm run build:backend && electron-builder",
+    "dist:win": "npm run build:backend:win && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false",
+    "dist:win:ps": "npm run build:backend:win:ps && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
@@ -43,7 +46,7 @@
       "category": "Network"
     },
     "win": {
-      "target": ["nsis"]
+      "target": ["portable", "nsis"]
     },
     "mac": {
       "target": ["dmg"]
