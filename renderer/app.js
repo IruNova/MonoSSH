@@ -12,6 +12,8 @@ const state = {
   selectedFile: null,
   selectedFiles: new Map(),
   fileCache: new Map(),
+  systemCache: new Map(),
+  systemRequests: new Map(),
   currentPath: '/',
   systemTimer: null
 };
@@ -332,7 +334,7 @@ function createTerminalTab(connection) {
     }
   });
 
-  return { id, connection, terminal, fit, view, ws: null, filePath: '/', fileCacheKey: `${id}:/` };
+  return { id, connection, terminal, fit, view, ws: null, filePath: '/', fileCacheKey: `${id}:/`, systemLoadedAt: 0 };
 }
 
 function connectTab(tab) {
@@ -392,7 +394,7 @@ function activateTab(id) {
   if (tab) {
     state.currentPath = tab.filePath || '/';
     loadFiles(state.currentPath).catch(err => toast(err.message));
-    refreshSystem().catch(() => {});
+    showSystemForTab(tab);
   }
 }
 
@@ -406,6 +408,8 @@ function closeTab(id = state.activeTabId) {
   for (const key of state.fileCache.keys()) {
     if (key.startsWith(`${tab.id}:`)) state.fileCache.delete(key);
   }
+  state.systemCache.delete(tab.id);
+  state.systemRequests.delete(tab.id);
   if (state.activeTabId === id) state.activeTabId = state.tabs[idx]?.id || state.tabs[idx - 1]?.id || null;
   if (state.activeTabId) activateTab(state.activeTabId);
   else {
@@ -421,15 +425,43 @@ function closeTab(id = state.activeTabId) {
   renderConnections();
 }
 
-async function refreshSystem() {
+function showSystemForTab(tab = activeTab()) {
+  if (!tab) {
+    resetSystemDashboard('连接后显示远端运行状态');
+    return;
+  }
+  const cached = state.systemCache.get(tab.id);
+  if (cached) {
+    renderSystemDashboard(cached.data);
+  } else {
+    resetSystemDashboard('系统信息加载中...');
+  }
+  if (!cached || Date.now() - cached.loadedAt > 30000) {
+    refreshSystem({ background: Boolean(cached) }).catch(err => {
+      if (activeTab()?.id === tab.id) el.systemInfo.textContent = `系统信息刷新失败：${err.message}`;
+    });
+  }
+}
+
+async function refreshSystem(options = {}) {
   const tab = activeTab();
   if (!tab) {
     resetSystemDashboard('连接后显示远端运行状态');
     return;
   }
-  el.systemInfo.textContent = '刷新中...';
-  const result = await api(`/api/system?id=${encodeURIComponent(tab.connection.id)}`);
-  renderSystemDashboard(parseSystemOutput(result.output || ''));
+  if (state.systemRequests.has(tab.id)) return state.systemRequests.get(tab.id);
+  if (!options.background) resetSystemDashboard('系统信息加载中...');
+  const promise = api(`/api/system?id=${encodeURIComponent(tab.connection.id)}`)
+    .then(result => {
+      const data = parseSystemOutput(result.output || '');
+      state.systemCache.set(tab.id, { data, loadedAt: Date.now() });
+      tab.systemLoadedAt = Date.now();
+      if (activeTab()?.id === tab.id) renderSystemDashboard(data);
+      return data;
+    })
+    .finally(() => state.systemRequests.delete(tab.id));
+  state.systemRequests.set(tab.id, promise);
+  return promise;
 }
 
 function resetSystemDashboard(status = '未连接') {
@@ -848,7 +880,7 @@ async function init() {
     toast(`后端不可用：${err.message}`, 6000);
   }
   state.systemTimer = setInterval(() => {
-    if (activeTab()) refreshSystem().catch(() => {});
+    if (activeTab()) refreshSystem({ background: true }).catch(() => {});
   }, 30000);
 }
 

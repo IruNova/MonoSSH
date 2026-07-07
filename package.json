@@ -2,6 +2,11 @@
   "name": "monossh",
   "version": "0.1.0",
   "description": "Lightweight SSH desktop client built with Go, Electron and xterm.js.",
+  "homepage": "https://github.com/IruNova/MonoSSH",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IruNova/MonoSSH.git"
+  },
   "main": "main.js",
   "author": {
     "name": "pi",
@@ -15,11 +20,11 @@
     "build:backend:win:ps": "powershell -NoProfile -ExecutionPolicy Bypass -Command \"$env:GOOS='windows'; $env:GOARCH='amd64'; go build -ldflags='-s -w' -o bin/ssh-backend.exe ./cmd/server\"",
     "dev": "npm run build:backend && electron .",
     "start": "electron .",
-    "dist": "npm run build:backend && electron-builder",
-    "dist:win": "npm run build:backend:win && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false",
-    "dist:win:ps": "npm run build:backend:win:ps && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false",
-    "dist:linux": "npm run build:backend && electron-builder --linux AppImage deb --x64",
-    "dist:mac": "npm run build:backend && electron-builder --mac dmg --x64"
+    "dist": "npm run build:backend && electron-builder --publish never",
+    "dist:win": "npm run build:backend:win && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false --publish never",
+    "dist:win:ps": "npm run build:backend:win:ps && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false --publish never",
+    "dist:linux": "npm run build:backend && electron-builder --linux AppImage deb --x64 --publish never",
+    "dist:mac": "npm run build:backend && electron-builder --mac dmg --x64 --publish never"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",
