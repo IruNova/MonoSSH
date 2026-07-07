@@ -1,0 +1,52 @@
+{
+  "name": "monossh",
+  "version": "0.1.0",
+  "description": "Lightweight SSH desktop client built with Go, Electron and xterm.js.",
+  "main": "main.js",
+  "author": "pi",
+  "license": "MIT",
+  "private": true,
+  "scripts": {
+    "build:backend": "go build -o bin/ssh-backend ./cmd/server",
+    "build:backend:win": "GOOS=windows GOARCH=amd64 go build -ldflags=\"-s -w\" -o bin/ssh-backend.exe ./cmd/server",
+    "dev": "npm run build:backend && electron .",
+    "start": "electron .",
+    "dist": "npm run build:backend && electron-builder"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0"
+  },
+  "devDependencies": {
+    "electron": "^31.7.7",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "dev.pi.monossh",
+    "productName": "MonoSSH",
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**",
+      "node_modules/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "bin",
+        "to": "backend",
+        "filter": ["ssh-backend*"]
+      }
+    ],
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Network"
+    },
+    "win": {
+      "target": ["nsis"]
+    },
+    "mac": {
+      "target": ["dmg"]
+    }
+  }
+}

@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MonoSSH</title>
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo">M</div>
+        <div>
+          <h1>MonoSSH</h1>
+          <p>Lightweight SSH Workspace</p>
+        </div>
+      </div>
+
+      <div class="sidebar-actions">
+        <button id="newConnBtn" class="primary">新建连接</button>
+        <button id="importDemoBtn" title="创建示例">示例</button>
+      </div>
+
+      <div class="searchbox">
+        <span>⌕</span>
+        <input id="searchInput" placeholder="搜索名称、主机、用户" />
+      </div>
+
+      <section class="panel connection-panel">
+        <div class="panel-title">
+          <span>SSH 管理</span>
+          <small id="connectionCount">0</small>
+        </div>
+        <div id="connectionList" class="connection-list empty">暂无连接</div>
+      </section>
+
+      <section class="panel system-panel">
+        <div class="panel-title">
+          <span>系统信息</span>
+          <button id="refreshSystemBtn" class="ghost">刷新</button>
+        </div>
+        <pre id="systemInfo">连接后显示远端运行状态</pre>
+      </section>
+    </aside>
+
+    <main class="workspace">
+      <header class="topbar">
+        <div class="tabs" id="tabs"></div>
+        <div class="topbar-actions">
+          <button id="connectBtn" class="primary">连接</button>
+          <button id="editConnBtn">编辑</button>
+          <button id="deleteConnBtn" class="danger">删除</button>
+        </div>
+      </header>
+
+      <section class="terminal-section">
+        <div class="section-head">
+          <div>
+            <strong id="terminalTitle">Terminal</strong>
+            <span id="terminalSubtitle">请选择一个 SSH 连接</span>
+          </div>
+          <div class="toolbar">
+            <button id="fitTerminalBtn">适配</button>
+            <button id="closeTabBtn">关闭标签</button>
+          </div>
+        </div>
+        <div id="terminalViews" class="terminal-views">
+          <div class="terminal-placeholder">
+            <h2>极简 SSH 终端</h2>
+            <p>左侧选择主机，支持密码/私钥、SOCKS5/HTTP 代理、文件管理。</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="file-section">
+        <div class="file-toolbar">
+          <div class="file-tabs">
+            <button class="active">文件</button>
+            <button id="commandTabBtn">命令</button>
+          </div>
+          <div class="pathbar">
+            <button id="homeBtn">⌂</button>
+            <button id="upBtn">↑</button>
+            <input id="remotePath" value="/" />
+            <button id="goPathBtn" class="primary">前往</button>
+          </div>
+          <div class="toolbar file-actions">
+            <button id="refreshFilesBtn">刷新</button>
+            <button id="uploadBtn">上传</button>
+            <button id="newFolderBtn">新文件夹</button>
+            <button id="downloadBtn">下载</button>
+            <button id="renameBtn">重命名</button>
+            <button id="deleteFileBtn" class="danger">删除</button>
+            <input id="uploadInput" type="file" multiple hidden />
+          </div>
+        </div>
+        <div class="file-manager">
+          <div class="file-tree">
+            <button data-path="/">/</button>
+            <button data-path="/root">/root</button>
+            <button data-path="/home">/home</button>
+            <button data-path="/var/log">/var/log</button>
+            <button data-path="/etc">/etc</button>
+            <div class="drop-zone" id="dropZone">拖拽文件到此上传</div>
+          </div>
+          <div class="file-table-wrap">
+            <table class="file-table">
+              <thead>
+                <tr>
+                  <th>文件名</th>
+                  <th>大小</th>
+                  <th>类型</th>
+                  <th>修改时间</th>
+                  <th>权限</th>
+                </tr>
+              </thead>
+              <tbody id="fileTableBody">
+                <tr><td colspan="5" class="muted center">连接后加载远端文件</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="connectionModal" class="modal hidden">
+    <div class="modal-backdrop" data-close-modal></div>
+    <form id="connectionForm" class="modal-card">
+      <div class="modal-head">
+        <div>
+          <h2 id="modalTitle">新建连接</h2>
+          <p>保存 SSH 主机，并可按连接配置 SOCKS5/HTTP 代理。</p>
+        </div>
+        <button type="button" class="icon" data-close-modal>×</button>
+      </div>
+
+      <input type="hidden" id="connId" />
+      <div class="form-grid">
+        <label>名称<input id="connName" required placeholder="生产服务器" /></label>
+        <label>分组<input id="connGroup" placeholder="默认" /></label>
+        <label>主机<input id="connHost" required placeholder="192.168.1.10" /></label>
+        <label>端口<input id="connPort" type="number" min="1" max="65535" value="22" /></label>
+        <label>用户名<input id="connUsername" required placeholder="root" /></label>
+        <label>密码<input id="connPassword" type="password" placeholder="可选" /></label>
+      </div>
+
+      <label class="full">私钥路径或 PEM 内容
+        <textarea id="connPrivateKey" rows="4" placeholder="~/.ssh/id_rsa 或 -----BEGIN OPENSSH PRIVATE KEY-----"></textarea>
+      </label>
+      <label class="full">私钥口令<input id="connPassphrase" type="password" placeholder="可选" /></label>
+
+      <div class="proxy-card">
+        <div class="proxy-title">
+          <strong>代理服务器</strong>
+          <span>连接时可选 SOCKS5 / HTTP CONNECT</span>
+        </div>
+        <div class="form-grid">
+          <label>代理类型
+            <select id="proxyType">
+              <option value="none">不使用代理</option>
+              <option value="socks5">SOCKS5</option>
+              <option value="http">HTTP</option>
+            </select>
+          </label>
+          <label>代理主机<input id="proxyHost" placeholder="127.0.0.1" /></label>
+          <label>代理端口<input id="proxyPort" type="number" min="1" max="65535" placeholder="1080" /></label>
+          <label>代理用户<input id="proxyUsername" placeholder="可选" /></label>
+          <label>代理密码<input id="proxyPassword" type="password" placeholder="可选" /></label>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" data-close-modal>取消</button>
+        <button type="submit" class="primary">保存</button>
+        <button type="button" id="saveConnectBtn" class="primary inverted">保存并连接</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>
