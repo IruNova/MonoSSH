@@ -17,7 +17,8 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #app { height: 100%; margin: 0; }
+html, body { height: 100%; margin: 0; }
+#app { height: calc(100% - 36px); margin: 0; }
 body {
   font-family: var(--sans);
   color: var(--text);
@@ -27,6 +28,53 @@ body {
     var(--bg);
   overflow: hidden;
 }
+.window-titlebar {
+  height: 36px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  background: #050505;
+  border-bottom: 1px solid var(--line-soft);
+  user-select: none;
+}
+.window-drag { -webkit-app-region: drag; }
+.titlebar-brand {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding-left: 12px;
+  color: #fff;
+  font-weight: 750;
+  letter-spacing: -.03em;
+}
+.titlebar-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  background: #fff;
+  color: #000;
+  font-size: 12px;
+  font-weight: 900;
+}
+.titlebar-fill { height: 100%; }
+.window-controls { height: 100%; display: flex; align-items: stretch; -webkit-app-region: no-drag; }
+.window-control {
+  width: 46px;
+  height: 36px;
+  border: 0;
+  border-left: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #d8d8d8;
+  font-size: 13px;
+  padding: 0;
+}
+.window-control:hover { transform: none; background: #19191b; border-color: transparent; }
+.window-control.close:hover { background: #e81123; color: #fff; }
+body.is-maximized .app-shell { padding: 10px; }
 button, input, textarea, select { font: inherit; }
 button {
   border: 1px solid var(--line);

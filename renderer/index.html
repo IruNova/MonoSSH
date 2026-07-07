@@ -8,6 +8,18 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <header class="window-titlebar">
+    <div class="window-drag titlebar-brand">
+      <div class="titlebar-logo">M</div>
+      <span>MonoSSH</span>
+    </div>
+    <div class="window-drag titlebar-fill"></div>
+    <div class="window-controls">
+      <button id="windowMinimize" class="window-control" title="最小化">—</button>
+      <button id="windowMaximize" class="window-control" title="最大化">□</button>
+      <button id="windowClose" class="window-control close" title="关闭">×</button>
+    </div>
+  </header>
   <div id="app" class="app-shell">
     <aside class="sidebar">
       <div class="brand">

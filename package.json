@@ -14,7 +14,9 @@
     "start": "electron .",
     "dist": "npm run build:backend && electron-builder",
     "dist:win": "npm run build:backend:win && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false",
-    "dist:win:ps": "npm run build:backend:win:ps && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false"
+    "dist:win:ps": "npm run build:backend:win:ps && electron-builder --win portable --x64 -c.win.signAndEditExecutable=false",
+    "dist:linux": "npm run build:backend && electron-builder --linux AppImage deb --x64",
+    "dist:mac": "npm run build:backend && electron-builder --mac dmg --x64"
   },
   "dependencies": {
     "@xterm/addon-fit": "^0.10.0",

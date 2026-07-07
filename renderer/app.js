@@ -68,7 +68,10 @@ const el = {
   transferPercent: $('transferPercent'),
   transferBar: $('transferBar'),
   transferDetail: $('transferDetail'),
-  toast: $('toast')
+  toast: $('toast'),
+  windowMinimize: $('windowMinimize'),
+  windowMaximize: $('windowMaximize'),
+  windowClose: $('windowClose')
 };
 
 function api(path, options = {}) {
@@ -711,6 +714,18 @@ function parentPath(p) {
 }
 
 function bindEvents() {
+  el.windowMinimize?.addEventListener('click', () => window.mono?.window?.minimize());
+  el.windowMaximize?.addEventListener('click', () => window.mono?.window?.maximizeToggle());
+  el.windowClose?.addEventListener('click', () => window.mono?.window?.close());
+  window.mono?.window?.onMaximized?.((maximized) => {
+    el.windowMaximize.textContent = maximized ? '❐' : '□';
+    document.body.classList.toggle('is-maximized', maximized);
+  });
+  window.mono?.window?.isMaximized?.().then(maximized => {
+    el.windowMaximize.textContent = maximized ? '❐' : '□';
+    document.body.classList.toggle('is-maximized', maximized);
+  }).catch(() => {});
+
   el.newConnBtn.addEventListener('click', () => openModal());
   el.importDemoBtn.addEventListener('click', async () => {
     openModal({ name: '示例服务器', group: '默认', host: '127.0.0.1', port: 22, username: 'root', proxy: { type: 'none' } });

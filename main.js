@@ -1,4 +1,4 @@
-const { app, BrowserWindow, dialog, shell } = require('electron');
+const { app, BrowserWindow, dialog, shell, ipcMain, Menu } = require('electron');
 const fs = require('fs');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -61,8 +61,10 @@ async function createWindow(port) {
     minWidth: 1180,
     minHeight: 760,
     title: 'MonoSSH',
-    backgroundColor: '#0a0a0a',
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    backgroundColor: '#050505',
+    frame: false,
+    titleBarStyle: 'hidden',
+    autoHideMenuBar: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -75,10 +77,27 @@ async function createWindow(port) {
     shell.openExternal(url);
     return { action: 'deny' };
   });
+  mainWindow.on('maximize', () => mainWindow.webContents.send('window:maximized', true));
+  mainWindow.on('unmaximize', () => mainWindow.webContents.send('window:maximized', false));
   await mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'), { query: { port: String(port) } });
 }
 
+function windowFromEvent(event) {
+  return BrowserWindow.fromWebContents(event.sender);
+}
+
+ipcMain.on('window:minimize', (event) => windowFromEvent(event)?.minimize());
+ipcMain.on('window:maximize-toggle', (event) => {
+  const win = windowFromEvent(event);
+  if (!win) return;
+  if (win.isMaximized()) win.unmaximize();
+  else win.maximize();
+});
+ipcMain.on('window:close', (event) => windowFromEvent(event)?.close());
+ipcMain.handle('window:is-maximized', (event) => windowFromEvent(event)?.isMaximized() || false);
+
 app.whenReady().then(async () => {
+  Menu.setApplicationMenu(null);
   try {
     backendPort = await startBackend();
     await createWindow(backendPort);
