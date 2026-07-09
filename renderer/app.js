@@ -177,6 +177,8 @@ function showContextMenu(e, tab) {
     <button data-action="clear">清屏<span class="shortcut">Ctrl+L</span></button>`;
 
   document.body.appendChild(contextMenu);
+  contextMenu.addEventListener('mousedown', (e) => e.stopPropagation());
+  contextMenu.addEventListener('click', (e) => e.stopPropagation());
 
   const rect = { x: e.clientX, y: e.clientY };
   const menuRect = contextMenu.getBoundingClientRect();
@@ -215,7 +217,9 @@ function hideContextMenu() {
   }
 }
 
-document.addEventListener('click', hideContextMenu);
+document.addEventListener('mousedown', (e) => {
+  if (contextMenu && !contextMenu.contains(e.target)) hideContextMenu();
+}, true);
 document.addEventListener('scroll', hideContextMenu, true);
 
 async function loadConnections() {
