@@ -1,4 +1,5 @@
 const { contextBridge, ipcRenderer } = require('electron');
+const { clipboard } = require('electron');
 
 contextBridge.exposeInMainWorld('mono', {
   platform: process.platform,
@@ -13,5 +14,9 @@ contextBridge.exposeInMainWorld('mono', {
       ipcRenderer.on('window:maximized', listener);
       return () => ipcRenderer.removeListener('window:maximized', listener);
     }
+  },
+  clipboard: {
+    readText: () => clipboard.readText(),
+    writeText: (text) => clipboard.writeText(text)
   }
 });

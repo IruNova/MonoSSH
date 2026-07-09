@@ -158,6 +158,66 @@ function activeTab() {
   return state.tabs.find(t => t.id === state.activeTabId) || null;
 }
 
+let contextMenu = null;
+
+function showContextMenu(e, tab) {
+  hideContextMenu();
+  const term = tab?.terminal;
+  const sel = term?.getSelection?.() || '';
+  const hasSel = sel.length > 0;
+  const clipText = window.mono?.clipboard?.readText?.() || '';
+
+  contextMenu = document.createElement('div');
+  contextMenu.className = 'ctx-menu';
+  contextMenu.innerHTML = `
+    <button data-action="copy" ${hasSel ? '' : 'disabled'}>复制<span class="shortcut">Ctrl+Shift+C</span></button>
+    <button data-action="paste" ${clipText ? '' : 'disabled'}>粘贴<span class="shortcut">Ctrl+Shift+V</span></button>
+    ${hasSel ? '<button data-action="paste-sel">粘贴到选择</button>' : ''}
+    <button data-action="select-all">全选<span class="shortcut">Ctrl+Shift+A</span></button>
+    <button data-action="clear">清屏<span class="shortcut">Ctrl+L</span></button>`;
+
+  document.body.appendChild(contextMenu);
+
+  const rect = { x: e.clientX, y: e.clientY };
+  const menuRect = contextMenu.getBoundingClientRect();
+  if (rect.x + menuRect.width > window.innerWidth) rect.x = window.innerWidth - menuRect.width - 6;
+  if (rect.y + menuRect.height > window.innerHeight) rect.y = window.innerHeight - menuRect.height - 6;
+  contextMenu.style.left = `${rect.x}px`;
+  contextMenu.style.top = `${rect.y}px`;
+
+  contextMenu.addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-action]');
+    if (!btn || btn.disabled) return;
+    const action = btn.dataset.action;
+    if (action === 'copy' && hasSel) {
+      window.mono?.clipboard?.writeText?.(sel);
+    } else if (action === 'paste' && clipText) {
+      for (const char of clipText) {
+        if (tab?.ws?.readyState === WebSocket.OPEN) tab.ws.send(char);
+      }
+    } else if (action === 'paste-sel' && hasSel) {
+      for (const char of sel) {
+        if (tab?.ws?.readyState === WebSocket.OPEN) tab.ws.send(char);
+      }
+    } else if (action === 'select-all') {
+      term?.selectAll?.();
+    } else if (action === 'clear') {
+      term?.clear?.();
+    }
+    hideContextMenu();
+  });
+}
+
+function hideContextMenu() {
+  if (contextMenu) {
+    contextMenu.remove();
+    contextMenu = null;
+  }
+}
+
+document.addEventListener('click', hideContextMenu);
+document.addEventListener('scroll', hideContextMenu, true);
+
 async function loadConnections() {
   const result = await api('/api/connections');
   state.connections = Array.isArray(result) ? result : [];
@@ -332,6 +392,12 @@ function createTerminalTab(connection) {
     if (t?.ws?.readyState === WebSocket.OPEN) {
       t.ws.send(JSON.stringify({ type: 'resize', cols: size.cols, rows: size.rows }));
     }
+  });
+
+  view.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
+    const t = state.tabs.find(x => x.id === id);
+    showContextMenu(e, t);
   });
 
   return { id, connection, terminal, fit, view, ws: null, filePath: '/', fileCacheKey: `${id}:/`, systemLoadedAt: 0 };
@@ -833,7 +899,32 @@ function bindEvents() {
     } catch (err) { toast(err.message); }
   });
   document.querySelectorAll('[data-close-modal]').forEach(x => x.addEventListener('click', closeModal));
-  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { closeModal(); hideContextMenu(); }
+    const tab = activeTab();
+    if (!tab) return;
+    const ws = tab.ws;
+    const isTerm = el.terminalViews.contains(document.activeElement) || document.activeElement?.classList?.contains?.('xterm-screen') || document.activeElement?.closest?.('.xterm');
+    if (!isTerm) return;
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.shiftKey && e.code === 'KeyC') {
+      e.preventDefault();
+      const sel = tab.terminal.getSelection();
+      if (sel) window.mono?.clipboard?.writeText?.(sel);
+    } else if (mod && e.shiftKey && e.code === 'KeyV') {
+      e.preventDefault();
+      const text = window.mono?.clipboard?.readText?.() || '';
+      for (const char of text) {
+        if (ws?.readyState === WebSocket.OPEN) ws.send(char);
+      }
+    } else if (mod && e.shiftKey && e.code === 'KeyA') {
+      e.preventDefault();
+      tab.terminal.selectAll();
+    } else if (mod && !e.shiftKey && e.code === 'KeyL') {
+      e.preventDefault();
+      tab.terminal.clear();
+    }
+  });
 
   el.fitTerminalBtn.addEventListener('click', () => activeTab()?.fit.fit());
   el.closeTabBtn.addEventListener('click', () => closeTab());
