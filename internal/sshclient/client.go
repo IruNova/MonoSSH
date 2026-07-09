@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/pkg/sftp"
@@ -201,4 +202,87 @@ func dialHTTPConnect(ctx context.Context, cfg model.ProxyConfig, target string) 
 	}
 	_ = conn.SetDeadline(time.Time{})
 	return conn, nil
+}
+
+type sshCacheEntry struct {
+	client    *ssh.Client
+	expiresAt time.Time
+}
+
+type SSHCache struct {
+	mu       sync.Mutex
+	clients  map[string]*sshCacheEntry
+	ttl      time.Duration
+	maxConns int
+}
+
+func NewSSHCache(ttl time.Duration, maxConns int) *SSHCache {
+	if ttl <= 0 {
+		ttl = 5 * time.Minute
+	}
+	if maxConns <= 0 {
+		maxConns = 32
+	}
+	return &SSHCache{
+		clients:  make(map[string]*sshCacheEntry),
+		ttl:      ttl,
+		maxConns: maxConns,
+	}
+}
+
+func (c *SSHCache) Get(ctx context.Context, item model.Connection) (*ssh.Client, error) {
+	c.mu.Lock()
+	if entry, ok := c.clients[item.ID]; ok && time.Now().Before(entry.expiresAt) {
+		if _, _, err := entry.client.Conn.SendRequest("keepalive@monossh", true, nil); err == nil {
+			c.mu.Unlock()
+			return entry.client, nil
+		}
+		entry.client.Close()
+		delete(c.clients, item.ID)
+	}
+	if len(c.clients) >= c.maxConns {
+		var oldestID string
+		var oldestAt time.Time
+		for id, e := range c.clients {
+			if e.expiresAt.Before(oldestAt) || oldestID == "" {
+				oldestID = id
+				oldestAt = e.expiresAt
+			}
+		}
+		if oldestID != "" {
+			if e, ok := c.clients[oldestID]; ok {
+				e.client.Close()
+			}
+			delete(c.clients, oldestID)
+		}
+	}
+	c.mu.Unlock()
+
+	client, err := Connect(ctx, item)
+	if err != nil {
+		return nil, err
+	}
+
+	c.mu.Lock()
+	c.clients[item.ID] = &sshCacheEntry{client: client, expiresAt: time.Now().Add(c.ttl)}
+	c.mu.Unlock()
+	return client, nil
+}
+
+func (c *SSHCache) Invalidate(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if entry, ok := c.clients[id]; ok {
+		entry.client.Close()
+		delete(c.clients, id)
+	}
+}
+
+func (c *SSHCache) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, entry := range c.clients {
+		entry.client.Close()
+		delete(c.clients, id)
+	}
 }

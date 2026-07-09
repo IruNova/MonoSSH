@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -31,6 +30,7 @@ import (
 
 type api struct {
 	store    *store.Store
+	sshCache *sshclient.SSHCache
 	upgrader websocket.Upgrader
 }
 
@@ -44,13 +44,15 @@ func main() {
 		log.Fatalf("open store: %v", err)
 	}
 	a := &api{
-		store: st,
+		store:    st,
+		sshCache: sshclient.NewSSHCache(5*time.Minute, 32),
 		upgrader: websocket.Upgrader{
 			ReadBufferSize:  32 * 1024,
 			WriteBufferSize: 32 * 1024,
 			CheckOrigin:     func(r *http.Request) bool { return true },
 		},
 	}
+	defer a.sshCache.Close()
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, http.StatusOK, map[string]any{"ok": true}) })
@@ -191,13 +193,12 @@ func (a *api) terminal(w http.ResponseWriter, r *http.Request) {
 	_ = writeWS(websocket.TextMessage, []byte("\r\n\x1b[2mConnecting to "+item.Username+"@"+item.Host+"...\x1b[0m\r\n"))
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	client, err := sshclient.Connect(ctx, item)
+	client, err := a.sshCache.Get(ctx, item)
 	cancel()
 	if err != nil {
 		_ = writeWS(websocket.TextMessage, []byte("\r\n\x1b[31mConnection failed: "+err.Error()+"\x1b[0m\r\n"))
 		return
 	}
-	defer client.Close()
 	session, err := client.NewSession()
 	if err != nil {
 		_ = writeWS(websocket.TextMessage, []byte("\r\n\x1b[31mOpen session failed: "+err.Error()+"\x1b[0m\r\n"))
@@ -352,14 +353,16 @@ func (a *api) fsDownload(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("missing path"))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-	fs, client, err := sshclient.SFTP(ctx, item)
+	client, err := a.sshCache.Get(r.Context(), item)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	defer client.Close()
+	fs, err := sftp.NewClient(client)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
 	defer fs.Close()
 	f, err := fs.Open(remotePath)
 	if err != nil {
@@ -367,16 +370,33 @@ func (a *api) fsDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer f.Close()
-	if stat, err := f.Stat(); err == nil {
-		w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
-		if ct := mime.TypeByExtension(path.Ext(remotePath)); ct != "" {
-			w.Header().Set("Content-Type", ct)
-		} else {
-			w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+strings.ReplaceAll(path.Base(remotePath), "\"", "")+"\"")
+	w.WriteHeader(http.StatusOK)
+	flusher, hasFlush := w.(http.Flusher)
+	buf := make([]byte, 32*1024)
+	for {
+		if err := r.Context().Err(); err != nil {
+			log.Printf("download cancelled by client: %v", err)
+			return
+		}
+		n, readErr := f.Read(buf)
+		if n > 0 {
+			if _, wErr := w.Write(buf[:n]); wErr != nil {
+				log.Printf("download write error: %v", wErr)
+				return
+			}
+			if hasFlush {
+				flusher.Flush()
+			}
+		}
+		if readErr != nil {
+			if readErr != io.EOF {
+				log.Printf("download read error: %v", readErr)
+			}
+			return
 		}
 	}
-	w.Header().Set("Content-Disposition", "attachment; filename=\""+strings.ReplaceAll(path.Base(remotePath), "\"", "")+"\"")
-	_, _ = io.Copy(w, f)
 }
 
 func (a *api) fsUpload(w http.ResponseWriter, r *http.Request) {
@@ -389,46 +409,102 @@ func (a *api) fsUpload(w http.ResponseWriter, r *http.Request) {
 	if remoteDir == "" {
 		remoteDir = "."
 	}
-	if err := r.ParseMultipartForm(512 << 20); err != nil {
-		writeError(w, http.StatusBadRequest, err)
+
+	uploadReader, err := r.MultipartReader()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("read multipart: %w", err))
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
-	defer cancel()
-	fs, client, err := sshclient.SFTP(ctx, item)
+
+	client, err := a.sshCache.Get(r.Context(), item)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	defer client.Close()
+	fs, err := sftp.NewClient(client)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
 	defer fs.Close()
-	remoteDir = cleanRemotePath(fs, remoteDir)
+
+	if realDir, err := fs.RealPath(remoteDir); err == nil && realDir != "" {
+		remoteDir = realDir
+	} else {
+		remoteDir = path.Clean("/" + remoteDir)
+	}
+
+	type fileResult struct {
+		Name   string `json:"name"`
+		Size   int64  `json:"size"`
+		OK     bool   `json:"ok"`
+		Err    string `json:"error,omitempty"`
+	}
+	results := make([]fileResult, 0)
 	count := 0
-	for _, files := range r.MultipartForm.File {
-		for _, header := range files {
-			in, err := header.Open()
+
+	for {
+		if err := r.Context().Err(); err != nil {
+			writeError(w, http.StatusBadGateway, fmt.Errorf("client disconnected during upload: %w", err))
+			return
+		}
+		part, partErr := uploadReader.NextPart()
+		if partErr == io.EOF {
+			break
+		}
+		if partErr != nil {
+			writeError(w, http.StatusBadRequest, partErr)
+			return
+		}
+		name := path.Base(strings.ReplaceAll(part.FileName(), "\\", "/"))
+		if name == "." || name == "" {
+			_ = part.Close()
+			continue
+		}
+		targetPath := path.Join(remoteDir, name)
+		fr := fileResult{Name: name}
+		err := func() error {
+			defer part.Close()
+			out, err := fs.Create(targetPath)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, err)
-				return
+				return fmt.Errorf("create remote file: %w", err)
 			}
-			name := path.Base(strings.ReplaceAll(header.Filename, "\\", "/"))
-			out, err := fs.Create(path.Join(remoteDir, name))
-			if err != nil {
-				_ = in.Close()
-				writeError(w, http.StatusBadGateway, err)
-				return
+			written, copyErr := io.Copy(out, part)
+			if syncErr := out.Sync(); syncErr != nil && copyErr == nil {
+				copyErr = fmt.Errorf("sync remote file: %w", syncErr)
 			}
-			_, copyErr := io.Copy(out, in)
-			_ = out.Close()
-			_ = in.Close()
+			if closeErr := out.Close(); closeErr != nil && copyErr == nil {
+				copyErr = fmt.Errorf("close remote file: %w", closeErr)
+			}
 			if copyErr != nil {
-				writeError(w, http.StatusBadGateway, copyErr)
-				return
+				_ = fs.Remove(targetPath)
+				return copyErr
 			}
+			if info, statErr := fs.Stat(targetPath); statErr != nil {
+				_ = fs.Remove(targetPath)
+				return fmt.Errorf("verify remote file: %w", statErr)
+			} else if info.Size() != written {
+				_ = fs.Remove(targetPath)
+				return fmt.Errorf("size mismatch: expected %d, got %d", written, info.Size())
+			}
+			fr.Size = written
+			return nil
+		}()
+		if err != nil {
+			fr.Err = err.Error()
+			fr.OK = false
+		} else {
+			fr.OK = true
 			count++
 		}
+		results = append(results, fr)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count})
+
+	if count == 0 && len(results) > 0 {
+		writeError(w, http.StatusBadGateway, fmt.Errorf("all uploads failed: %s", results[0].Err))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": count, "results": results})
 }
 
 func (a *api) fsMkdir(w http.ResponseWriter, r *http.Request) {
@@ -502,18 +578,45 @@ func (a *api) fsDelete(w http.ResponseWriter, r *http.Request) {
 	for _, p := range paths {
 		args = append(args, shellQuote(p))
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
-	defer cancel()
-	out, err := sshclient.Run(ctx, item, "rm -rf -- "+strings.Join(args, " "))
+	ctx := requestContext(r)
+	client, err := a.sshCache.Get(ctx, item)
 	if err != nil {
-		msg := err.Error()
-		if len(out) > 0 {
-			msg += ": " + strings.TrimSpace(string(out))
-		}
-		writeError(w, http.StatusBadGateway, errors.New(msg))
+		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(paths), "output": string(out)})
+	session, err := client.NewSession()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	defer session.Close()
+	cmd := "rm -rf -- " + strings.Join(args, " ")
+	type result struct {
+		out []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := session.CombinedOutput(cmd)
+		done <- result{out, err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		_ = session.Close()
+		writeError(w, http.StatusBadGateway, ctx.Err())
+		return
+	case res := <-done:
+		if res.err != nil {
+			msg := res.err.Error()
+			if len(res.out) > 0 {
+				msg += ": " + strings.TrimSpace(string(res.out))
+			}
+			writeError(w, http.StatusBadGateway, errors.New(msg))
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "count": len(paths), "output": string(res.out)})
+	}
 }
 
 func (a *api) fsRename(w http.ResponseWriter, r *http.Request) {
@@ -560,8 +663,6 @@ func (a *api) system(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
-	defer cancel()
 	cmd := `cpu_sample() { awk 'NR==1 { idle=$5+$6; total=0; for (i=2; i<=NF; i++) total += $i; print total, idle }' /proc/stat 2>/dev/null; }
 first="$(cpu_sample)"
 sleep 0.25
@@ -573,12 +674,40 @@ printf "LOAD\t"; awk '{print $1"\t"$2"\t"$3}' /proc/loadavg 2>/dev/null || print
 free -m 2>/dev/null | awk '/Mem:/ { pct=$2>0?$3*100/$2:0; printf "MEM\t%s\t%s\t%.0f\n",$3,$2,pct }'
 df -P -h / 2>/dev/null | awk 'NR==2 { gsub("%","",$5); printf "DISK\t%s\t%s\t%s\n",$3,$2,$5 }'
 printf "PROC\n"; ps -eo pcpu,pmem,comm --sort=-pcpu 2>/dev/null | awk 'NR>1 && NR<=6 {printf "%s\t%s\t%s\n",$1,$2,$3}'`
-	out, err := sshclient.Run(ctx, item, cmd)
-	if err != nil && len(out) == 0 {
+	ctx := requestContext(r)
+	client, err := a.sshCache.Get(ctx, item)
+	if err != nil {
 		writeError(w, http.StatusBadGateway, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"output": string(out)})
+	session, err := client.NewSession()
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err)
+		return
+	}
+	defer session.Close()
+	type result struct {
+		out []byte
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		out, err := session.CombinedOutput(cmd)
+		done <- result{out, err}
+	}()
+	select {
+	case <-ctx.Done():
+		_ = session.Signal(ssh.SIGKILL)
+		_ = session.Close()
+		writeError(w, http.StatusBadGateway, ctx.Err())
+		return
+	case res := <-done:
+		if res.err != nil && len(res.out) == 0 {
+			writeError(w, http.StatusBadGateway, res.err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"output": string(res.out)})
+	}
 }
 
 func cleanRemotePath(fs *sftp.Client, p string) string {
@@ -629,6 +758,10 @@ func mergeQuery(raw, key, value string) string {
 		return key + "=" + value
 	}
 	return raw + "&" + key + "=" + value
+}
+
+func requestContext(r *http.Request) context.Context {
+	return context.WithoutCancel(r.Context())
 }
 
 func atoiDefault(s string, def int) int {
